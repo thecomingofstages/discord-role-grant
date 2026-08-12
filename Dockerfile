@@ -3,6 +3,12 @@
 # reproducible across Railway's rebuilds.
 FROM node:22-bookworm-slim
 
+# The slim base image strips curl/wget/ca-certificates, so we have to add
+# them back to download cloudflared. apt-get clean keeps the image small.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
 # Install cloudflared from Cloudflare's official GitHub release. Using the
 # exact URL (not /latest) keeps builds deterministic; bump the version
 # intentionally when you want to upgrade.
