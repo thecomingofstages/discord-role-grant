@@ -11,9 +11,25 @@
 
 set -e
 
+# Resolve binary locations relative to this script so we don't depend on
+# nixpacks using /app as the working directory.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CLOUDFLARED_BIN="$(command -v cloudflared || echo /usr/bin/cloudflared)"
+CLOUDFLARED_CFG="$SCRIPT_DIR/config.yml"
+
+if [ ! -x "$CLOUDFLARED_BIN" ]; then
+  echo "start.sh: cloudflared not found at $CLOUDFLARED_BIN (is it installed?)" >&2
+  exit 1
+fi
+if [ ! -r "$CLOUDFLARED_CFG" ]; then
+  echo "start.sh: config.yml not readable at $CLOUDFLARED_CFG" >&2
+  exit 1
+fi
+
 # Pin the origin so the tunnel forwards to the port Railway actually exposes.
 # If you need to override the port, set $PORT before invoking this script.
-/usr/bin/cloudflared --config /app/config.yml tunnel run discord-bot &
+echo "start.sh: cloudflared=$CLOUDFLARED_BIN config=$CLOUDFLARED_CFG port=$PORT"
+"$CLOUDFLARED_BIN" --config "$CLOUDFLARED_CFG" tunnel run discord-bot &
 TUNNEL_PID=$!
 
 node src/index.js &
