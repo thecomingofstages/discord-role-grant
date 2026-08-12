@@ -16,18 +16,24 @@
 builder = "NIXPACKS"          # Railway's default. Detects Node, runs npm install.
 
 [deploy]
-# Runs the Cloudflare Tunnel daemon in the foreground alongside the bot.
-# Requires the TUNNEL_TOKEN env var to be set in the Railway Variables tab.
-# Nixpacks installs cloudflared via the apt packages directive below — if
-# your build path differs (e.g. custom Dockerfile), make sure cloudflared
-# is in $PATH inside the container.
-startCommand = "cloudflared tunnel run discord-bot & node src/index.js"
+# Runs the Cloudflare Tunnel daemon alongside the Node bot via start.sh.
+# start.sh uses set -e + wait -n so a failure in either process fails the
+# container, triggering Railway's restart policy.
+#
+# TUNNEL_TOKEN, PORT, and the rest of the bot's env vars come from the
+# Variables tab — not declared here.
+#
+# config.yml (next to start.sh in the repo) routes
+# discord-bot.thecomingofstages.com to http://localhost:8080, which is
+# where authServer.js binds (Railway sets $PORT to 8080 by default).
+startCommand = "./start.sh"
 healthcheckPath = "/health"
 healthcheckTimeout = 100
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
 
-# Nixpacks: install cloudflared so the startCommand above can find it.
-# Without this, the startCommand fails with "cloudflared: command not found".
+# Nixpacks: install cloudflared so start.sh can find /usr/bin/cloudflared.
+# Without this, the startCommand fails and only the Node half boots,
+# which is exactly the failure mode that produced the original 1033 error.
 [build.apt]
 packages = ["cloudflared"]

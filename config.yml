@@ -1,0 +1,22 @@
+# Cloudflare Tunnel routing rules for the discord-bot service.
+#
+# The `tunnel` field must match the name you passed to `cloudflared tunnel
+# create discord-bot`. The credentials-file path is unused when running with
+# a TUNNEL_TOKEN env var (cloudflared pulls credentials from the token), but
+# cloudflared still parses this file and refuses to start without the field,
+# so we point it at /dev/null.
+#
+# `ingress` rules are checked in order; the first hostname match wins. The
+# final catch-all (`- service: http_status:404`) is required by cloudflared
+# and serves 404 for any hostname the tunnel isn't responsible for.
+#
+# `$PORT` defaults to 8080 on Railway and is set automatically; the
+# `service` URL below reads it. To override, set PORT in the Variables tab.
+
+tunnel: discord-bot
+credentials-file: /dev/null
+
+ingress:
+  - hostname: discord-bot.thecomingofstages.com
+    service: http://localhost:8080
+  - service: http_status:404
