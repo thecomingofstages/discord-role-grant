@@ -4,6 +4,8 @@ This bot lets users run `/register` in Discord, sign in with Google (popup-style
 look themselves up in your Google Sheet, and — after confirming — get their Discord
 roles assigned and nickname changed automatically.
 
+
+
 ## How it works (overview)
 
 1. User runs `/register` → bot DMs them a link.
