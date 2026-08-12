@@ -4,8 +4,8 @@
 # language from package.json; this file just pins the start command and
 # healthcheck.
 #
-# Variables (DISCORD_BOT_TOKEN, GOOGLE_CLIENT_SECRET, etc.) are NOT
-# declared here. Add them in the Railway dashboard → your service →
+# Variables (DISCORD_BOT_TOKEN, GOOGLE_CLIENT_SECRET, TUNNEL_TOKEN, etc.) are
+# NOT declared here. Add them in the Railway dashboard → your service →
 # Variables tab. See .env.example for the full list.
 #
 # The Google service-account JSON goes in a single Variable named
@@ -16,8 +16,18 @@
 builder = "NIXPACKS"          # Railway's default. Detects Node, runs npm install.
 
 [deploy]
-startCommand = "node src/index.js"
+# Runs the Cloudflare Tunnel daemon in the foreground alongside the bot.
+# Requires the TUNNEL_TOKEN env var to be set in the Railway Variables tab.
+# Nixpacks installs cloudflared via the apt packages directive below — if
+# your build path differs (e.g. custom Dockerfile), make sure cloudflared
+# is in $PATH inside the container.
+startCommand = "cloudflared tunnel run discord-bot & node src/index.js"
 healthcheckPath = "/health"
 healthcheckTimeout = 100
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
+
+# Nixpacks: install cloudflared so the startCommand above can find it.
+# Without this, the startCommand fails with "cloudflared: command not found".
+[build.apt]
+packages = ["cloudflared"]

@@ -21,23 +21,30 @@ roles assigned and nickname changed automatically.
 
 ---
 
-## 1. Hosting: Railway (free tier) + Cloudflare in front
+## 1. Hosting: Railway (free tier) + Cloudflare Tunnel in front
 
-The bot used to run on your Ubuntu machine and be exposed via `cloudflared`. The new
-setup is a normal Node web service running on **Railway** (free trial credit is fine
-for a small bot like this), with **Cloudflare** sitting in front of it as DNS + reverse
-proxy. Cloudflare provides the public hostname and HTTPS for free; Railway provides the
-actual long-lived Node process that the bot needs (Cloudflare Workers can't host a
-long-lived WebSocket, and the discord.js client requires a persistent process).
+The bot is a normal Node web service running on **Railway** (free trial credit
+is fine for a small bot like this), with **Cloudflare** sitting in front of it
+as DNS + TLS provider via a **Cloudflare Tunnel** (`cloudflared` running inside
+the Railway container). Cloudflare provides the public hostname and HTTPS for
+free; Railway provides the long-lived Node process that discord.js needs.
+
+We use a tunnel rather than Cloudflare's normal orange-cloud DNS proxy because
+the tunnel daemon dials *out* to Cloudflare's edge — Railway never has to
+expose a public port, and Cloudflare's edge doesn't need to know the
+container's IP. This also means HSTS / cert warnings about the wrong cert
+issuer mean the tunnel daemon isn't running, not that the domain is hijacked.
 
 Architecture:
 
 ```
-user ─▶ Cloudflare (HTTPS, your domain)
+user ─▶ Cloudflare edge (HTTPS, *.yourdomain.com, Google Trust Services cert)
             │
-            └─▶ Railway (Node + Express + discord.js)
-                 ├─ Discord WebSocket (bot)
-                 └─ Express app: /auth, /auth/callback, /health
+            └─▶ cloudflared daemon (inside the Railway container)
+                    │
+                    └─▶ Node + Express + discord.js
+                         ├─ Discord WebSocket (bot)
+                         └─ Express app: /auth, /auth/callback, /health
 ```
 
 ### 1a. Push the repo to GitHub
@@ -51,12 +58,12 @@ existing `.gitignore` already excludes `.env` and `service-account-key.json`).
    be charged until you exceed the trial credit).
 2. **New Project** → **Deploy from GitHub repo** → select this repo.
 3. Railway auto-detects Node and starts building. The `railway.toml` in this repo
-   pins the start command to `node src/index.js` and the healthcheck to `/health`.
+   pins the start command to `cloudflared tunnel run discord-bot & node src/index.js`,
+   installs `cloudflared` via nixpacks apt, and points the healthcheck at `/health`.
 4. Once the first deploy finishes, Railway gives you a generated URL like
-   `https://discord-role-bot-production.up.railway.app`. Open it once — you'll see
-   the bot respond (it'll fail on routes that need env vars you haven't set yet,
-   that's fine; the healthcheck at `/health` will start returning `ok` once the
-   env vars below are in place).
+   `https://discord-role-bot-production.up.railway.app`. You won't use this URL
+   directly — Cloudflare's edge will be the public front door — but it's a
+   useful sanity check that the container started.
 
 **Free-tier notes:** Railway gives every account a monthly usage credit (currently
 $5). A small Discord bot like this typically uses $1–2/month — well under the
@@ -102,25 +109,71 @@ JSON file into a single Variable:
 
 The modified `src/sheets.js` handles both forms — see the top of `getSheetsClient()`.
 
-### 1e. Put Cloudflare in front of Railway
+### 1e. Put Cloudflare in front of Railway (via Cloudflare Tunnel)
+
+We don't use Cloudflare's normal orange-cloud DNS proxy here, because the bot
+needs long-lived outbound WebSocket connections to Discord and Railway's
+internal networking is happier when Cloudflare connects *into* the service
+rather than being routed to a public IP. So we run a **Cloudflare Tunnel**
+(`cloudflared`) inside the Railway container.
 
 1. Sign in at https://dash.cloudflare.com → **Add a site** → enter your domain
    (e.g. `yourdomain.com`). Cloudflare gives you two nameservers; set those as
    the nameservers at your domain registrar (Namecheap, GoDaddy, etc.).
 2. Wait for the nameservers to propagate (usually <1 hour, can take up to 24h).
-3. In Cloudflare DNS, add a record:
-   - **Type:** `CNAME`
-   - **Name:** `discord-bot` (or whatever subdomain you want)
-   - **Target:** your Railway URL's host part, e.g.
-     `discord-role-bot-production.up.railway.app` (no `https://`, no path)
-   - **Proxy status:** **Proxied** (orange cloud — this is the point)
-4. In Cloudflare → **SSL/TLS** → set mode to **Full**. Railway provides a valid
-   certificate, so Full is appropriate.
-5. Go back to the Railway Variables tab and set `PUBLIC_BASE_URL` to
-   `https://discord-bot.yourdomain.com` and `GOOGLE_REDIRECT_URI` to
-   `https://discord-bot.yourdomain.com/auth/callback`.
-6. Railway redeploys automatically when you change a Variable. Wait for the new
-   deploy to finish.
+3. **One-time, on your local machine** (any machine with `cloudflared`
+   installed — see the install hint below):
+
+   ```bash
+   cloudflared tunnel login                                       # opens a browser to authorize
+   cloudflared tunnel create discord-bot                          # gives you a UUID; save it
+   cloudflared tunnel route dns discord-bot discord-bot.yourdomain.com
+   ```
+
+   The third command writes the correct CNAME into Cloudflare DNS for you
+   (`discord-bot` → `<UUID>.cfargotunnel.com`, Proxied). You don't need to
+   touch DNS by hand.
+
+   > **Install hint:** `cloudflared` is not in apt by default. Easiest path:
+   > `curl -fsSL -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 && sudo install -m 755 cloudflared /usr/local/bin/cloudflared`.
+
+4. **Get a token for Railway to use:**
+   ```bash
+   cloudflared tunnel token discord-bot
+   ```
+   Copy the long opaque string it prints.
+
+5. In Railway → your service → **Variables**, add:
+   ```
+   TUNNEL_TOKEN=<the long string from step 4>
+   ```
+   (Also make sure `PUBLIC_BASE_URL` is `https://discord-bot.yourdomain.com`
+   and `GOOGLE_REDIRECT_URI` is `https://discord-bot.yourdomain.com/auth/callback`.)
+
+6. The repo's `railway.toml` already runs `cloudflared tunnel run discord-bot`
+   alongside `node src/index.js` and installs `cloudflared` via nixpacks apt
+   packages. You do not need to change the start command — Railway redeploys
+   automatically when `railway.toml` changes.
+
+7. Confirm everything is connected:
+   - **Cloudflare Zero Trust → Networks → Tunnels** shows `discord-bot` as
+     **Healthy** (green dot, ≥1 active connection).
+   - Railway deploy logs include lines like `Registered tunnel connection` from
+     `cloudflared`.
+   - `https://discord-bot.yourdomain.com/health` returns `ok`.
+
+If the tunnel ever shows **Inactive** or Chrome shows **Error 1033**, the
+tunnel daemon inside the Railway container isn't connecting — check the
+Railway deploy logs for `cloudflared` errors first. The most common cause is
+a missing or stale `TUNNEL_TOKEN`; regenerate it locally with
+`cloudflared tunnel token discord-bot` and paste the new value into Railway.
+
+> **Why this matters for HSTS / cert warnings:** when the tunnel daemon is
+> healthy, Cloudflare's edge serves a real `*.yourdomain.com` cert (issued by
+> Google Trust Services) for `discord-bot.yourdomain.com`. If you instead see
+> Firefox warning about an unrelated cert (e.g. `*.sucuri.net`) or Chrome
+> showing 1033, the tunnel isn't actually connected — it's a connectivity
+> problem, not a real security incident.
 
 ### 1f. Update the Google OAuth redirect URI
 
