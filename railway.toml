@@ -1,0 +1,23 @@
+# Railway config — https://docs.railway.com/reference/config-as-code
+#
+# Deploys the bot as a Node web service. Railway auto-detects the repo
+# language from package.json; this file just pins the start command and
+# healthcheck.
+#
+# Variables (DISCORD_BOT_TOKEN, GOOGLE_CLIENT_SECRET, etc.) are NOT
+# declared here. Add them in the Railway dashboard → your service →
+# Variables tab. See .env.example for the full list.
+#
+# The Google service-account JSON goes in a single Variable named
+# GOOGLE_SERVICE_ACCOUNT_KEY as a multi-line string. See README section
+# 1d for the exact steps.
+
+[build]
+builder = "NIXPACKS"          # Railway's default. Detects Node, runs npm install.
+
+[deploy]
+startCommand = "node src/index.js"
+healthcheckPath = "/health"
+healthcheckTimeout = 100
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

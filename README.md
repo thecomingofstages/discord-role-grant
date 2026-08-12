@@ -21,90 +21,140 @@ roles assigned and nickname changed automatically.
 
 ---
 
-## 1. Expose your local server via Cloudflare Tunnel
+## 1. Hosting: Railway (free tier) + Cloudflare in front
 
-This replaces any need for a VPS, public IP, or reverse proxy like Caddy. Cloudflare
-Tunnel (`cloudflared`) runs on your existing machine and creates an outbound-only
-encrypted connection to Cloudflare's edge — nothing is exposed directly from your home
-network. Cloudflare handles HTTPS automatically.
+The bot used to run on your Ubuntu machine and be exposed via `cloudflared`. The new
+setup is a normal Node web service running on **Railway** (free trial credit is fine
+for a small bot like this), with **Cloudflare** sitting in front of it as DNS + reverse
+proxy. Cloudflare provides the public hostname and HTTPS for free; Railway provides the
+actual long-lived Node process that the bot needs (Cloudflare Workers can't host a
+long-lived WebSocket, and the discord.js client requires a persistent process).
 
-### 1a. Install cloudflared
+Architecture:
 
-```bash
-# Ubuntu / Debian (your setup)
-curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
-sudo dpkg -i cloudflared.deb
+```
+user ─▶ Cloudflare (HTTPS, your domain)
+            │
+            └─▶ Railway (Node + Express + discord.js)
+                 ├─ Discord WebSocket (bot)
+                 └─ Express app: /auth, /auth/callback, /health
 ```
 
-Verify: `cloudflared --version`
+### 1a. Push the repo to GitHub
 
-### 1b. Log in to Cloudflare
+Railway deploys from a Git repo. If this code isn't on GitHub yet, push it now (the
+existing `.gitignore` already excludes `.env` and `service-account-key.json`).
 
-```bash
-cloudflared tunnel login
+### 1b. Create the Railway service
+
+1. Sign in at https://railway.com (free; needs a credit card on file but you won't
+   be charged until you exceed the trial credit).
+2. **New Project** → **Deploy from GitHub repo** → select this repo.
+3. Railway auto-detects Node and starts building. The `railway.toml` in this repo
+   pins the start command to `node src/index.js` and the healthcheck to `/health`.
+4. Once the first deploy finishes, Railway gives you a generated URL like
+   `https://discord-role-bot-production.up.railway.app`. Open it once — you'll see
+   the bot respond (it'll fail on routes that need env vars you haven't set yet,
+   that's fine; the healthcheck at `/health` will start returning `ok` once the
+   env vars below are in place).
+
+**Free-tier notes:** Railway gives every account a monthly usage credit (currently
+$5). A small Discord bot like this typically uses $1–2/month — well under the
+limit. There are no cold-starts (unlike Render's free tier); the service stays up
+continuously. As long as you stay within the monthly credit, you pay $0.
+
+### 1c. Fill in the environment variables
+
+In the Railway dashboard → your service → **Variables** tab, click **+ New Variable**
+and add each of the following. (Railway has no equivalent of Render's Blueprint
+auto-population; you type them in once and they're stored encrypted.)
+
+| Key | Where to get the value |
+|---|---|
+| `DISCORD_BOT_TOKEN` | Discord Developer Portal → app → Bot |
+| `DISCORD_GUILD_ID` | Discord: right-click your server icon → Copy Server ID |
+| `DISCORD_CLIENT_ID` | Discord Developer Portal → app → General Information |
+| `GOOGLE_CLIENT_ID` | Google Cloud Console → Credentials → your OAuth client |
+| `GOOGLE_CLIENT_SECRET` | same |
+| `SPREADSHEET_ID` | The long ID in your Google Sheet URL |
+| `PUBLIC_BASE_URL` | `https://<your-cloudflare-hostname>` (set up in step 1e) |
+| `GOOGLE_REDIRECT_URI` | `${PUBLIC_BASE_URL}/auth/callback` |
+| `SESSION_SECRET` | A long random string. Generate with `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` |
+
+The remaining variables in `.env.example` (`PORT`, `CONFIG_CACHE_TTL_MS`, the three
+sheet-name vars) have sensible defaults baked into the code, but you can override
+them in the Variables tab if you want.
+
+### 1d. Add the Google service-account key as a single Variable
+
+Unlike Render, Railway doesn't have a "Secret File" feature — every value is a
+string. So instead of a file path, paste the entire contents of the service-account
+JSON file into a single Variable:
+
+1. Open your service-account JSON file in a text editor. Copy the entire contents
+   (one long line is fine; multi-line also works in Railway's UI).
+2. Railway dashboard → your service → **Variables** → **+ New Variable**:
+   - **Name:** `GOOGLE_SERVICE_ACCOUNT_KEY`
+   - **Value:** paste the JSON contents
+3. Leave `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` unset (or set it to nothing) — the code
+   reads `GOOGLE_SERVICE_ACCOUNT_KEY` first and only falls back to the file path
+   when that one isn't set, so local dev with a file still works.
+
+The modified `src/sheets.js` handles both forms — see the top of `getSheetsClient()`.
+
+### 1e. Put Cloudflare in front of Railway
+
+1. Sign in at https://dash.cloudflare.com → **Add a site** → enter your domain
+   (e.g. `yourdomain.com`). Cloudflare gives you two nameservers; set those as
+   the nameservers at your domain registrar (Namecheap, GoDaddy, etc.).
+2. Wait for the nameservers to propagate (usually <1 hour, can take up to 24h).
+3. In Cloudflare DNS, add a record:
+   - **Type:** `CNAME`
+   - **Name:** `discord-bot` (or whatever subdomain you want)
+   - **Target:** your Railway URL's host part, e.g.
+     `discord-role-bot-production.up.railway.app` (no `https://`, no path)
+   - **Proxy status:** **Proxied** (orange cloud — this is the point)
+4. In Cloudflare → **SSL/TLS** → set mode to **Full**. Railway provides a valid
+   certificate, so Full is appropriate.
+5. Go back to the Railway Variables tab and set `PUBLIC_BASE_URL` to
+   `https://discord-bot.yourdomain.com` and `GOOGLE_REDIRECT_URI` to
+   `https://discord-bot.yourdomain.com/auth/callback`.
+6. Railway redeploys automatically when you change a Variable. Wait for the new
+   deploy to finish.
+
+### 1f. Update the Google OAuth redirect URI
+
+In Google Cloud Console → APIs & Services → Credentials → your OAuth client →
+**Authorized redirect URIs**, add:
 ```
-
-This opens a browser window. Select the domain you want to use (e.g. `yourdomain.com`).
-It will save a certificate to `~/.cloudflared/cert.pem` automatically.
-
-### 1c. Create the tunnel
-
-```bash
-cloudflared tunnel create discord-bot
+https://discord-bot.yourdomain.com/auth/callback
 ```
-
-This creates a tunnel and saves a credentials file to
-`~/.cloudflared/<TUNNEL-UUID>.json`. Note the UUID printed — you'll need it in the next step.
-
-### 1d. Create the tunnel config file
-
-Create `~/.cloudflared/config.yml`:
-
-```yaml
-tunnel: <TUNNEL-UUID>           # paste the UUID from above
-credentials-file: /home/<your-username>/.cloudflared/<TUNNEL-UUID>.json
-
-ingress:
-  - hostname: discord-bot.yourdomain.com
-    service: http://localhost:3000
-  - service: http_status:404   # catch-all required by cloudflared
-```
-
-Replace `<TUNNEL-UUID>`, `<your-username>`, and `yourdomain.com` with real values.
-
-### 1e. Route DNS to the tunnel
-
-```bash
-cloudflared tunnel route dns discord-bot discord-bot.yourdomain.com
-```
-
-This adds a CNAME record in Cloudflare DNS automatically — no need to touch the
-Cloudflare dashboard manually.
-
-### 1f. Run the tunnel
-
-```bash
-cloudflared tunnel run discord-bot
-```
-
-To run it as a background service that starts on boot:
-
-```bash
-sudo cloudflared service install
-sudo systemctl start cloudflared
-sudo systemctl enable cloudflared
-```
+(You can keep the old localhost one for local dev, or remove it.)
 
 ### 1g. Verify
 
-Once the bot is running (step 4), visit:
-`https://discord-bot.yourdomain.com/health` — should return `ok`.
+- `https://discord-bot.yourdomain.com/health` returns `ok`.
+- `/register` in Discord DMs you a link that starts with `https://discord-bot.yourdomain.com/auth?...`
+- Clicking the link goes to Google's consent screen with the right redirect URI.
 
-**Cost:** Free. Cloudflare Tunnel is part of the free Cloudflare plan. No VPS needed.
+**Cost:** $0. Railway free trial credit + Cloudflare free tier. You'll only be
+charged if you exceed Railway's monthly credit (a Discord bot this small won't).
 
-> **Note for Google OAuth setup (step 2):** use `https://discord-bot.yourdomain.com/auth/callback`
-> as the redirect URI — same as before, the tunnel makes this URL publicly reachable
-> even though the bot runs locally.
+### 1h. (Optional) Local development
+
+You can still run the bot on your Ubuntu machine against the same Railway URLs
+if you want to test a code change without redeploying. In that case, run:
+
+```bash
+cp .env.example .env
+# edit .env — leave GOOGLE_SERVICE_ACCOUNT_KEY blank, set GOOGLE_SERVICE_ACCOUNT_KEY_PATH=./service-account-key.json
+# PUBLIC_BASE_URL still points at the Cloudflare hostname
+node src/index.js
+```
+
+`discord.js` will connect to Discord and the local Express app will respond to
+the Cloudflare-fronted URL. Useful for testing slash-command changes before
+pushing them.
 
 ---
 
@@ -122,6 +172,9 @@ Once the bot is running (step 4), visit:
 4. **Create OAuth Client ID** (APIs & Services → Credentials → Create Credentials → OAuth client ID):
    - Application type: **Web application**
    - Authorized redirect URI: `https://discord-bot.yourdomain.com/auth/callback`
+     (use the Cloudflare hostname you set up in step 1e, NOT the
+     `*.up.railway.app` URL — Google's redirect URI must match the hostname
+     the user actually sees in their browser)
    - Save the **Client ID** and **Client Secret** → goes in `.env`.
 5. **Create a Service Account** (APIs & Services → Credentials → Create Credentials → Service account):
    - No special role needed at the project level.
@@ -183,27 +236,22 @@ since it's looked up the same way as every other role.
 
 ## 4. Configure the bot
 
-1. Copy `.env.example` to `.env` and fill in every value.
-2. Find your **Spreadsheet ID**: it's the long string in the sheet's URL between
-   `/d/` and `/edit`.
-3. Make sure the service account (from step 2 above) has Editor access to the whole
+1. Make sure the service account (from step 2 above) has Editor access to the whole
    spreadsheet — it needs to read CONFIG, ROLES, and BASE DATA.
-4. Fill in role IDs directly in the **CONFIG** sheet tab (see below) — no code file to edit.
-5. Install dependencies:
+2. Fill in role IDs directly in the **CONFIG** sheet tab (see below) — no code file to edit.
+3. Railway reads env vars from the **Variables** tab in the dashboard. The full
+   list with explanations is in `.env.example`.
+4. Any local dev (optional) uses `.env` directly:
    ```bash
+   cp .env.example .env
+   # edit .env — leave GOOGLE_SERVICE_ACCOUNT_KEY blank,
+   # set GOOGLE_SERVICE_ACCOUNT_KEY_PATH=./service-account-key.json
    npm install
-   ```
-6. Run the bot:
-   ```bash
    node src/index.js
    ```
-   For production, use a process manager so it survives reboots/crashes:
-   ```bash
-   npm install -g pm2
-   pm2 start src/index.js --name discord-role-bot
-   pm2 save
-   pm2 startup
-   ```
+   For production, deploys to Railway handle everything — no `pm2`, no
+   `cloudflared`, no systemd. Pushing to `main` on GitHub triggers an
+   automatic redeploy (Railway's default behaviour).
 
 ---
 
@@ -234,7 +282,8 @@ minor sheet rearrangement won't break it — but the **"Email"** header text and
 ## 6. Testing checklist
 
 - [ ] `https://discord-bot.yourdomain.com/health` returns `ok`
-- [ ] `/register` in Discord sends you a DM with a working link
+- [ ] `/register` in Discord sends you a DM with a link starting with
+      `https://discord-bot.yourdomain.com/auth?...`
 - [ ] Clicking the link shows Google's consent screen, not an error
 - [ ] After consenting, you get redirected to a simple "you can close this" page
 - [ ] You receive a follow-up DM with the embed and Confirm/Deny buttons
@@ -246,6 +295,7 @@ minor sheet rearrangement won't break it — but the **"Email"** header text and
 - [ ] An email not present in ROLES correctly triggers the "not found" message
 - [ ] Editing a role ID in CONFIG and running `/refresh-roles` picks up the change
       without needing a bot restart
+- [ ] (Railway) A push to `main` on GitHub triggers an automatic redeploy
 
 ---
 
