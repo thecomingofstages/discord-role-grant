@@ -13,8 +13,24 @@ let sheetsClient = null;
 async function getSheetsClient() {
   if (sheetsClient) return sheetsClient;
 
-  const keyPath = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH;
-  const keyFile = JSON.parse(fs.readFileSync(keyPath, 'utf8'));
+  // Two ways to supply the service-account credentials:
+  //   1. GOOGLE_SERVICE_ACCOUNT_KEY — the JSON contents inline as a string.
+  //      Used on Railway / Render / any serverless-ish host that doesn't have
+  //      a Secret File concept. Recommended.
+  //   2. GOOGLE_SERVICE_ACCOUNT_KEY_PATH — path to a JSON file on disk.
+  //      Used for local dev. Same as the original setup.
+  let keyFile;
+  if (process.env.GOOGLE_SERVICE_ACCOUNT_KEY) {
+    keyFile = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
+  } else {
+    const keyPath = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH;
+    if (!keyPath) {
+      throw new Error(
+        'Neither GOOGLE_SERVICE_ACCOUNT_KEY nor GOOGLE_SERVICE_ACCOUNT_KEY_PATH is set.'
+      );
+    }
+    keyFile = JSON.parse(fs.readFileSync(keyPath, 'utf8'));
+  }
 
   const auth = new google.auth.GoogleAuth({
     credentials: keyFile,
