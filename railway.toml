@@ -13,7 +13,12 @@
 # 1d for the exact steps.
 
 [build]
-builder = "NIXPACKS"          # Railway's default. Detects Node, runs npm install.
+builder = "DOCKERFILE"        # Uses the Dockerfile in the repo root, which
+                              # installs cloudflared from GitHub releases.
+                              # Nixpacks' [build.apt] did not actually install
+                              # it on this project's nixpacks version, so we
+                              # switched to a Dockerfile for a deterministic
+                              # install path.
 
 [deploy]
 # Runs the Cloudflare Tunnel daemon alongside the Node bot via start.sh.
@@ -31,9 +36,3 @@ healthcheckPath = "/health"
 healthcheckTimeout = 100
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
-
-# Nixpacks: install cloudflared so start.sh can find /usr/bin/cloudflared.
-# Without this, the startCommand fails and only the Node half boots,
-# which is exactly the failure mode that produced the original 1033 error.
-[build.apt]
-packages = ["cloudflared"]

@@ -1,0 +1,24 @@
+# Mirrors .gitignore plus a few Docker-specific exclusions. Keeping these
+# out of the build context shrinks the COPY step and prevents a stray
+# `cloudflared` binary in the working directory from sneaking into the
+# image and shadowing the apt-installed one (this caused the original
+# "Permission denied" error).
+
+# Build artifacts
+node_modules/
+.git/
+.gitignore
+.gitattributes
+.dockerignore
+Dockerfile
+README.md
+LICENSE
+.env
+.env.*
+
+# Local dev secrets & scratch files
+service-account-key.json
+*.log
+cloudflared
+*.swp
+.DS_Store
