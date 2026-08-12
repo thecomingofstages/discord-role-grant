@@ -1,13 +1,11 @@
-#!/bin/sh
-# Runs the Cloudflare Tunnel daemon alongside the Node bot. We use the
-# absolute path /usr/bin/cloudflared explicitly so that a stray file named
-# "cloudflared" in the working directory (which has happened during local
-# testing) can't shadow the apt-installed binary and silently break the
-# tunnel start.
+#!/bin/bash
+# Runs the Cloudflare Tunnel daemon alongside the Node bot. We use bash
+# (not /bin/sh) so `wait -n` is available — exit as soon as either child
+# dies. docker.io/library/node:22-bookworm-slim ships bash, so no extra
+# install step needed.
 #
-# `set -e` makes any failure in either child cause the shell to exit, which
-# triggers Railway's restart policy. `wait -n` means we exit as soon as
-# either child dies, instead of running half a service.
+# `set -e` makes any failure in the launch checks fail this script
+# immediately, before either background process is started.
 
 set -e
 
@@ -38,6 +36,7 @@ NODE_PID=$!
 # On any exit signal, kill both children so the container exits cleanly.
 trap "kill $TUNNEL_PID $NODE_PID 2>/dev/null" EXIT INT TERM
 
-# Block until either process exits. If cloudflared dies first, node gets
-# killed by the trap and Railway restarts the whole container.
+# Block until either child exits; the trap above kills the other one, and
+# this script then exits (per `set -e`). Railway's ON_FAILURE restart policy
+# restarts the whole container.
 wait -n
