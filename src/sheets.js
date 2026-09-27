@@ -207,79 +207,73 @@ async function getBaseDataSheetData() {
   const headerRowIndex = 0;
   const headers = rows[headerRowIndex];
 
-  const discordIdCol = findColumn(headers, /discord[\s_]?id/i, 8);
+  // Col F "สรุป Email ที่ใช้" (ARRAYFORMULA) identifies the user's row.
+  // Col I holds the Discord username, col J the numeric Discord ID.
+  const emailCol = findColumn(headers, /สรุป\s*email/i, 5);
+  const discordUsernameCol = findColumn(headers, /discord\s*user\s*(name|id)/i, 8);
+  const discordIdCol = findColumn(headers, /^discord\s*id$/i, 9);
   const skipCol = 0;
 
-  return { headers, discordIdCol, skipCol, rows, headerRowIndex };
+  return { headers, emailCol, discordUsernameCol, discordIdCol, skipCol, rows, headerRowIndex };
 }
 
-async function upsertBaseDataRow(discordId, rowDataByHeaderName) {
+function columnLetter(index) {
+  let letter = '';
+  for (let n = index + 1; n > 0; n = Math.floor((n - 1) / 26)) {
+    letter = String.fromCharCode(65 + ((n - 1) % 26)) + letter;
+  }
+  return letter;
+}
+
+/**
+ * Write the Discord username + ID into the user's existing BASE DATA row,
+ * found by email in col F. Only those two cells are touched -- every other
+ * column in BASE DATA is formula-driven, so rows are never inserted/deleted.
+ */
+async function writeDiscordToBaseData(email, discordUsername, discordId) {
   const sheets = await getSheetsClient();
-  const { headers, discordIdCol, skipCol, rows, headerRowIndex } = await getBaseDataSheetData();
+  const { emailCol, discordUsernameCol, discordIdCol, skipCol, rows, headerRowIndex } =
+    await getBaseDataSheetData();
+  const target = email.trim().toLowerCase();
 
-  let existingRowIndex = -1;
+  const matches = [];
   for (let i = headerRowIndex + 1; i < rows.length; i++) {
-    const cell = (rows[i][discordIdCol] || '').toString().trim();
-    if (cell && cell === discordId.toString()) {
-      existingRowIndex = i;
-      break;
-    }
+    const cell = (rows[i][emailCol] || '').toString().trim().toLowerCase();
+    if (cell && cell === target) matches.push(i);
   }
 
-  if (existingRowIndex !== -1) {
-    const skipFlag = isChecked(rows[existingRowIndex][skipCol]);
-    if (skipFlag) {
-      return { status: 'skipped_protected_row' };
-    }
-
-    const sheetMeta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
-    const sheetObj = sheetMeta.data.sheets.find(
-      (s) => s.properties.title === BASE_DATA_SHEET
-    );
-    const sheetId = sheetObj.properties.sheetId;
-
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: SPREADSHEET_ID,
-      requestBody: {
-        requests: [
-          {
-            deleteDimension: {
-              range: {
-                sheetId,
-                dimension: 'ROWS',
-                startIndex: existingRowIndex,
-                endIndex: existingRowIndex + 1,
-              },
-            },
-          },
-        ],
-      },
-    });
+  if (matches.length === 0) {
+    console.warn(`[BASE DATA] email not found: ${email} (discord ${discordUsername} / ${discordId}) -- sheet not updated`);
+    return { status: 'not_found' };
+  }
+  if (matches.length > 1) {
+    console.warn(`[BASE DATA] email in multiple rows (${matches.map((i) => i + 1).join(', ')}): ${email} -- sheet not updated`);
+    return { status: 'duplicate' };
   }
 
-  const newRow = headers.map((h) => {
-    const key = Object.keys(rowDataByHeaderName).find(
-      (k) => k.toLowerCase() === (h || '').toString().trim().toLowerCase()
-    );
-    return key ? rowDataByHeaderName[key] : '';
-  });
+  const rowIndex = matches[0];
+  if (isChecked(rows[rowIndex][skipCol])) {
+    return { status: 'skipped_protected_row' };
+  }
 
-  newRow[discordIdCol] = discordId.toString();
-
-  await sheets.spreadsheets.values.append({
+  const sheetRow = rowIndex + 1;
+  await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId: SPREADSHEET_ID,
-    range: `${BASE_DATA_SHEET}!A1`,
-    valueInputOption: 'USER_ENTERED',
-    insertDataOption: 'INSERT_ROWS',
-    requestBody: { values: [newRow] },
+    requestBody: {
+      valueInputOption: 'RAW',
+      data: [
+        { range: `${BASE_DATA_SHEET}!${columnLetter(discordUsernameCol)}${sheetRow}`, values: [[discordUsername]] },
+        { range: `${BASE_DATA_SHEET}!${columnLetter(discordIdCol)}${sheetRow}`, values: [[discordId.toString()]] },
+      ],
+    },
   });
 
-  return { status: existingRowIndex !== -1 ? 'overwritten' : 'inserted' };
+  return { status: 'updated', row: sheetRow };
 }
 
 module.exports = {
   lookupByEmail,
-  upsertBaseDataRow,
+  writeDiscordToBaseData,
   getRolesSheetData,
   getBaseDataSheetData,
   getRoleIdMap,

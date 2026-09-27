@@ -13,7 +13,7 @@ const {
 } = require('discord.js');
 
 const { createApp } = require('./authServer');
-const { lookupByEmail, upsertBaseDataRow, invalidateConfigCache, getRoleIdMap } = require('./sheets');
+const { lookupByEmail, writeDiscordToBaseData, invalidateConfigCache, getRoleIdMap } = require('./sheets');
 const { computeAssignment } = require('./assignmentLogic');
 
 const client = new Client({
@@ -291,14 +291,7 @@ async function handleButtonInteraction(interaction) {
       }
 
       // --- Write to BASE DATA sheet ---
-      const sheetResult = await upsertBaseDataRow(discordId, {
-        discord_id: discordId,
-        fullname: assignment.fullname,
-        nickname: assignment.nickname,
-        email: assignment.email,
-        roles: assignment.roleNamesForDisplay.join(', '),
-        server_nickname: assignment.suggestedNickname,
-      });
+      const sheetResult = await writeDiscordToBaseData(assignment.email, member.user.username, discordId);
 
       pendingAssignments.delete(discordId);
 
